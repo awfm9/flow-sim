@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"os"
 	"time"
 
@@ -15,7 +16,6 @@ import (
 	"github.com/onflow/flow-go-sdk/client"
 	"github.com/onflow/flow-go-sdk/crypto"
 	"github.com/onflow/flow-go/model/flow"
-	"github.com/onflow/flow-go/utils/unittest"
 )
 
 func main() {
@@ -31,7 +31,7 @@ func main() {
 	// bind the configuration variables to command line flags
 	pflag.UintVarP(&flagTPS, "tps", "t", 1, "transactions per second throughput")
 	pflag.StringVarP(&flagAPI, "api", "a", "localhost:3569", "access node API address")
-	pflag.StringVarP(&flagKey, "key", "k", unittest.ServiceAccountPrivateKeyHex, "service account private key")
+	pflag.StringVarP(&flagKey, "key", "k", "8ae3d0461cfed6d6f49bfc25fa899351c39d1bd21fdba8c87595b6c49bb4cc43", "service account private key")
 	pflag.StringVarP(&flagNet, "net", "n", string(flow.Testnet), "Flow network to use")
 
 	// parse the command line flags into the configuration variables
@@ -48,28 +48,28 @@ func main() {
 	// 3rd: flow token contract
 	gen := sdk.NewAddressGenerator(sdk.ChainID(flagNet))
 	rootAddress := gen.NextAddress()
-	// tokenAddress := gen.NextAddress()
-	// flowAddress := gen.NextAddress()
+	tokenAddress := gen.NextAddress()
+	flowAddress := gen.NextAddress()
 
 	// initialize the SDK client
 	cli, err := client.New(flagAPI, grpc.WithInsecure())
 	if err != nil {
-		log.Fatal().Err(err).Msg("could not connect to access node")
+		log.Fatal().Err(err).Str("api", flagAPI).Msg("could not connect to access node")
 	}
 
 	// get the root account public information
 	rootAccount, err := cli.GetAccount(context.Background(), rootAddress)
 	if err != nil {
-		log.Fatal().Err(err).Msg("could not get root account")
+		log.Fatal().Err(err).Str("address", rootAddress.String()).Msg("could not get root account")
 	}
 
 	// decode the root account private key and create the signer
-	pubKey := rootAccount.Keys[0]
-	rootKey, err := crypto.DecodePrivateKeyHex(pubKey.SigAlgo, flagKey)
+	rootPub := rootAccount.Keys[0]
+	rootPriv, err := crypto.DecodePrivateKeyHex(rootPub.SigAlgo, flagKey)
 	if err != nil {
-		log.Fatal().Err(err).Msg("could not decode service account private key")
+		log.Fatal().Err(err).Str("key", flagKey).Msg("could not decode service account private key")
 	}
-	rootSigner := crypto.NewInMemorySigner(rootKey, pubKey.HashAlgo)
+	rootSigner := crypto.NewInMemorySigner(rootPriv, rootPub.HashAlgo)
 
 	// generate a private key for a new account
 	seed := make([]byte, crypto.MinSeedLength)
@@ -94,9 +94,31 @@ func main() {
 		log.Fatal().Err(err).Msg("could not get block header")
 	}
 
+	// make the script
+	script := fmt.Sprintf(`
+import FungibleToken from 0x%s
+import FlowToken from 0x%s
+
+transaction(publicKey: [UInt8], tokens: UFix64) {
+  prepare(signer: AuthAccount) {
+	let vault = signer.borrow<&FlowToken.Vault>(from: /storage/flowTokenVault)
+      ?? panic("Could not borrow reference to the owner's Vault")
+
+	let account = AuthAccount(payer: signer)
+	account.addPublicKey(publicKey)
+
+	let receiver = account.getCapability(/public/flowTokenReceiver)
+	.borrow<&{FungibleToken.Receiver}>()
+	?? panic("Could not borrow receiver reference to the recipient's Vault")
+
+	receiver.deposit(from: <-vault.withdraw(amount: tokens))
+  }
+}
+`, tokenAddress, flowAddress)
+
 	// generate the account creation transaction
 	tx := sdk.NewTransaction().
-		SetScript([]byte{}).
+		SetScript([]byte(script)).
 		SetReferenceBlockID(final.ID).
 		SetProposalKey(rootAddress, 0, rootAccount.Keys[0].SequenceNumber).
 		AddAuthorizer(rootAddress).

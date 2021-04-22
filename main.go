@@ -7,32 +7,33 @@ import (
 	"os"
 	"time"
 
+	"github.com/awfm9/flow-sim/scripts"
 	"github.com/rs/zerolog"
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
 
-	"github.com/onflow/cadence"
 	sdk "github.com/onflow/flow-go-sdk"
 	"github.com/onflow/flow-go-sdk/client"
 	"github.com/onflow/flow-go-sdk/crypto"
-	"github.com/onflow/flow-go/model/flow"
 )
 
 func main() {
 
 	// declare the configuration variables
 	var (
-		flagTPS uint
-		flagAPI string
-		flagKey string
-		flagNet string
+		flagTPS     uint
+		flagAPI     string
+		flagKey     string
+		flagNet     string
+		flagBalance uint
 	)
 
 	// bind the configuration variables to command line flags
-	pflag.UintVarP(&flagTPS, "tps", "t", 1, "transactions per second throughput")
+	pflag.UintVarP(&flagTPS, "tps", "t", 8, "transactions per second throughput")
 	pflag.StringVarP(&flagAPI, "api", "a", "localhost:3569", "access node API address")
 	pflag.StringVarP(&flagKey, "key", "k", "8ae3d0461cfed6d6f49bfc25fa899351c39d1bd21fdba8c87595b6c49bb4cc43", "service account private key")
-	pflag.StringVarP(&flagNet, "net", "n", string(flow.Testnet), "Flow network to use")
+	pflag.StringVarP(&flagNet, "net", "n", "flow-testnet", "Flow network to use")
+	pflag.UintVarP(&flagBalance, "balance", "b", 1_000_000, "default token balance for new accounts")
 
 	// parse the command line flags into the configuration variables
 	pflag.Parse()
@@ -48,7 +49,7 @@ func main() {
 	// 3rd: flow token contract
 	gen := sdk.NewAddressGenerator(sdk.ChainID(flagNet))
 	rootAddress := gen.NextAddress()
-	tokenAddress := gen.NextAddress()
+	fungibleAddress := gen.NextAddress()
 	flowAddress := gen.NextAddress()
 
 	// initialize the SDK client
@@ -82,105 +83,61 @@ func main() {
 		log.Fatal().Err(err).Msg("could not generate private key")
 	}
 
-	// create the SDK version of the account public key
+	// STEP 1: bind closure to immutable addresses & configured amounts
+	createAccount := scripts.CreateAccount(fungibleAddress, flowAddress, flagBalance)
+
+	// STEP 2: create a transaction to create a specific account
 	accountKey := sdk.NewAccountKey().
 		FromPrivateKey(privKey).
 		SetHashAlgo(crypto.SHA3_256).
 		SetWeight(sdk.AccountKeyWeightThreshold)
+	tx := createAccount(accountKey)
 
-	// get the latest block to use as reference block
+	// STEP 3: configure the transaction for the signer
+	tx.SetPayer(rootAddress).
+		SetProposalKey(rootAddress, 0, rootAccount.Keys[0].SequenceNumber).
+		AddAuthorizer(rootAddress)
+
+	// STEP 4: configure the transaction for current blockchain state
 	final, err := cli.GetLatestBlockHeader(context.Background(), false)
 	if err != nil {
 		log.Fatal().Err(err).Msg("could not get block header")
 	}
+	tx.SetReferenceBlockID(final.ID)
 
-	// make the script
-	script := fmt.Sprintf(`
-import FungibleToken from 0x%s
-import FlowToken from 0x%s
-
-transaction(publicKey: [UInt8], tokens: UFix64) {
-  prepare(signer: AuthAccount) {
-	let vault = signer.borrow<&FlowToken.Vault>(from: /storage/flowTokenVault)
-      ?? panic("Could not borrow reference to the owner's Vault")
-
-	let account = AuthAccount(payer: signer)
-	account.addPublicKey(publicKey)
-
-	let receiver = account.getCapability(/public/flowTokenReceiver)
-	.borrow<&{FungibleToken.Receiver}>()
-	?? panic("Could not borrow receiver reference to the recipient's Vault")
-
-	receiver.deposit(from: <-vault.withdraw(amount: tokens))
-  }
-}
-`, tokenAddress, flowAddress)
-
-	// generate the account creation transaction
-	tx := sdk.NewTransaction().
-		SetScript([]byte(script)).
-		SetReferenceBlockID(final.ID).
-		SetProposalKey(rootAddress, 0, rootAccount.Keys[0].SequenceNumber).
-		AddAuthorizer(rootAddress).
-		SetPayer(rootAddress)
-
-	// convert the account key to a cadence byte array
-	keyHash := accountKey.Encode()
-	bytes := make([]cadence.Value, 0, len(keyHash))
-	for _, b := range keyHash {
-		bytes = append(bytes, cadence.NewUInt8(b))
-	}
-	byteArray := cadence.NewArray(bytes)
-
-	// define the initial token amount of the account
-	amount, err := cadence.NewUFix64FromParts(1_000_000, 0)
-	if err != nil {
-		log.Fatal().Err(err).Msg("could not create token amount")
-	}
-
-	// add the arguments to the transaction
-	err = tx.AddArgument(byteArray)
-	if err != nil {
-		log.Fatal().Err(err).Msg("could not add public key bytes to transaction")
-	}
-	err = tx.AddArgument(amount)
-	if err != nil {
-		log.Fatal().Err(err).Msg("could not add token amount to transaction")
-	}
-
-	// sign the transaction with the root key
+	// STEP 5: sign the transaction
 	err = tx.SignEnvelope(rootAddress, 0, rootSigner)
 	if err != nil {
 		log.Fatal().Err(err).Msg("could not sign transaction envelope")
 	}
 
-	// submit the transaction through the SDK client
+	// STEP 6: submit the transaction
 	err = cli.SendTransaction(context.Background(), *tx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("could not send transaction")
 	}
 
 	// keep polling for the result
+	status := sdk.TransactionStatusUnknown
+	var result *sdk.TransactionResult
 	ticker := time.NewTicker(100 * time.Millisecond)
+Loop:
 	for range ticker.C {
-		result, err := cli.GetTransactionResult(context.Background(), tx.ID())
+		result, err = cli.GetTransactionResult(context.Background(), tx.ID())
 		if err != nil {
 			log.Fatal().Err(err).Msg("could not get result")
 		}
-		switch result.Status {
-		case sdk.TransactionStatusExpired:
-			log.Info().Msg("transaction expired")
-		case sdk.TransactionStatusUnknown:
-			log.Info().Msg("transaction unknown")
-		case sdk.TransactionStatusPending:
-			log.Info().Msg("transaction pending")
-		case sdk.TransactionStatusExecuted:
-			log.Info().Msg("transaction executed")
-		case sdk.TransactionStatusFinalized:
-			log.Info().Msg("transaction finalized")
-		case sdk.TransactionStatusSealed:
-			log.Info().Msg("transaction sealed")
+		if status == result.Status {
+			continue
+		}
+		status = result.Status
+		log.Info().Str("status", status.String()).Msg("transaction status changed")
+		if status == sdk.TransactionStatusSealed || status == sdk.TransactionStatusExpired {
+			break Loop
 		}
 	}
 	ticker.Stop()
+
+	// log the transaction error
+	log.Info().Str("events", fmt.Sprintf("%v", result.Events)).Msg("transaction events")
 }

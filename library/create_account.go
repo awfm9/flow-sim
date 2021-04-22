@@ -1,4 +1,4 @@
-package scripts
+package library
 
 import (
 	"encoding/hex"
@@ -32,11 +32,11 @@ transaction(key: String, amount: UFix64) {
 }
 `
 
-func CreateAccount(fungibleAddress sdk.Address, flowAddress sdk.Address, tokenAmount uint) func(accountKey *sdk.AccountKey) *sdk.Transaction {
+func createAccount(fungibleAddress sdk.Address, flowAddress sdk.Address, defaultBalance uint) func(accountKey *sdk.AccountKey) *sdk.Transaction {
 	script := createAccountTemplate
 	script = strings.ReplaceAll(script, FUNGIBLE_TOKEN, fungibleAddress.Hex())
 	script = strings.ReplaceAll(script, FLOW_TOKEN, flowAddress.Hex())
-	amount, _ := cadence.NewUFix64FromParts(int(tokenAmount), 0)
+	amount, _ := cadence.NewUFix64FromParts(int(defaultBalance), 0)
 	return func(accountKey *sdk.AccountKey) *sdk.Transaction {
 		key := cadence.NewString(hex.EncodeToString(accountKey.Encode()))
 		tx := sdk.NewTransaction().

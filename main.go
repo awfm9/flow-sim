@@ -36,6 +36,7 @@ func main() {
 		flagBalance uint
 		flagUsers   uint
 		flagLimit   uint64
+		flagLevel   string
 	)
 
 	// bind the configuration variables to command line flags
@@ -45,6 +46,7 @@ func main() {
 	pflag.UintVarP(&flagBalance, "balance", "b", 1, "default token balance for new accounts")
 	pflag.UintVarP(&flagUsers, "users", "u", 1_000, "number of users to create")
 	pflag.Uint64VarP(&flagLimit, "limit", "l", 1_000_000, "number of total transactions to execute before stopping")
+	pflag.StringVarP(&flagLevel, "level", "g", zerolog.InfoLevel.String(), "log level to use for log output")
 
 	// parse the command line flags into the configuration variables
 	pflag.Parse()
@@ -53,6 +55,11 @@ func main() {
 	zerolog.TimeFieldFormat = time.RFC3339
 	zerolog.TimestampFunc = func() time.Time { return time.Now().UTC() }
 	log := zerolog.New(os.Stderr).With().Timestamp().Logger().Level(zerolog.DebugLevel)
+	level, err := zerolog.ParseLevel(flagLevel)
+	if err != nil {
+		log.Fatal().Err(err).Str("level", flagLevel).Msg("could not parse log level")
+	}
+	log = log.Level(level)
 
 	// initialize the flow address generator and get the default accounts:
 	// 1st: service account (root)
@@ -78,7 +85,7 @@ func main() {
 		log.Fatal().Err(err).Msg("could not initialize root")
 	}
 
-	log.Info().Str("address", root.Address().Hex()).Msg("root account initialized")
+	log.Debug().Str("address", root.Address().Hex()).Msg("root account initialized")
 
 	// keeping track of total number of transactions
 	var transactions uint64
@@ -95,6 +102,7 @@ func main() {
 	}()
 
 	// create the configured amount of user accounts
+	var accounts uint
 	creation := make(chan *actor.User)
 	wg.Add(1)
 	go func() {
@@ -116,7 +124,7 @@ func main() {
 				continue
 			}
 
-			log.Info().Msg("creating user account")
+			log.Debug().Msg("creating user account")
 
 			// create the user
 			user, err := root.CreateUser()
@@ -124,7 +132,11 @@ func main() {
 				log.Fatal().Err(err).Msg("could not create user")
 			}
 
-			log.Info().Str("address", user.Address().Hex()).Msg("user account created")
+			log.Debug().Str("address", user.Address().Hex()).Msg("user account created")
+
+			accounts++
+
+			log.Info().Uint("accounts", accounts).Msg("user account added")
 
 			// submit user to channel to add to managed users
 			creation <- user
@@ -137,10 +149,8 @@ func main() {
 	go func() {
 		defer wg.Done()
 
-		// we want to spread the transactions over the entire time-to-sealing,
-		// which we assume here to be 8 seconds
-		interval := 8 * time.Second / time.Duration(flagUsers)
-		ticker := time.NewTicker(interval)
+		// the initial interval is one time-to-sealing
+		interval := 15 * time.Second
 
 		// keep list of all users
 		var users []*actor.User
@@ -158,10 +168,20 @@ func main() {
 				if !ok {
 					users = nil
 				}
+
 				users = append(users, user)
 
 			// otherwise, use ticker to decide how many
-			case <-ticker.C:
+			case <-time.After(interval):
+
+				// make sure we have at least two accounts created
+				if accounts < 2 {
+					continue
+				}
+
+				// make sure each account sends one transaction for every
+				// time-to-sealing period
+				interval = 15 * time.Second / time.Duration(accounts)
 
 				// if we have less than two users, skip for now
 				if len(users) < 2 {
@@ -187,7 +207,7 @@ func main() {
 				users[0], users[last] = users[last], users[0]
 				users = users[:last]
 
-				log.Info().
+				log.Debug().
 					Str("sender", sender.Address().Hex()).
 					Str("receiver", receiver.Address().Hex()).
 					Msg("executing token transfer")
@@ -204,7 +224,7 @@ func main() {
 						log.Error().Err(err).Msg("token transfer failed")
 						return
 					}
-					log.Info().
+					log.Debug().
 						Str("sender", sender.Address().Hex()).
 						Str("receiver", receiver.Address().Hex()).
 						Msg("token transfer executed")
@@ -212,9 +232,29 @@ func main() {
 
 			}
 		}
+	}()
 
-		// stop the ticker
-		ticker.Stop()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		ticker := time.NewTicker(time.Second)
+		var previous uint64
+	LoggingLoop:
+		for {
+			select {
+			case <-done:
+				break LoggingLoop
+			case <-ticker.C:
+				total := atomic.LoadUint64(&transactions)
+				if total == previous {
+					continue
+				}
+				previous = total
+				log.Info().Uint64("transactions", total).Msg("token transer(s) added")
+			}
+		}
+
 	}()
 
 	wg.Wait()

@@ -89,7 +89,6 @@ func (u *User) Submit(
 			result, err := u.cli.GetTransactionResult(context.Background(), tx.ID())
 			if err != nil {
 				u.log.Fatal().Err(err).Msg("could not get transaction result")
-				return
 			}
 
 			// if the transaction has expired, report it as error
@@ -117,6 +116,7 @@ func (u *User) Submit(
 
 			// otherwise, report the result
 			sealed(result)
+			return
 		}
 	}()
 

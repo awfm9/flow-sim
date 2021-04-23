@@ -43,7 +43,7 @@ func (u *User) Submit(
 	u.mutex.Unlock()
 
 	// get the reference block ID for expiration management
-	header, err := u.cli.GetLatestBlockHeader(context.Background(), false)
+	header, err := u.cli.GetLatestBlockHeader(context.Background(), true)
 	if err != nil {
 		return fmt.Errorf("could not get latest block header (%w)", err)
 	}
@@ -92,24 +92,31 @@ func (u *User) Submit(
 				return
 			}
 
-			// if the transaction has expired, call the expired callback
-			if result.Status == flow.TransactionStatusExpired || result.Status == flow.TransactionStatusUnknown {
-				failed(fmt.Errorf("transaction failed (%s)", result.Status))
+			// if the transaction has expired, report it as error
+			if result.Status == flow.TransactionStatusExpired {
+				failed(fmt.Errorf("transaction expired"))
 				return
 			}
 
-			// if the transaction has failed, call the failure callback
+			// if the transaction is unknown, report it as error
+			if result.Status == flow.TransactionStatusUnknown {
+				failed(fmt.Errorf("transaction unknown"))
+				return
+			}
+
+			// if the transaction is not sealed yet, continue checking
+			if result.Status != flow.TransactionStatusSealed {
+				continue
+			}
+
+			// if the transaction has an error, report failure
 			if result.Error != nil {
 				failed(result.Error)
 				return
 			}
 
-			// if the transaction result has been sealed, call the callback
-			if result.Status == flow.TransactionStatusSealed {
-				sealed(result)
-				return
-			}
-
+			// otherwise, report the result
+			sealed(result)
 		}
 	}()
 

@@ -32,14 +32,13 @@ func NewRoot(log zerolog.Logger, cli *client.Client, lib Library, address flow.A
 
 	root := &Root{
 		User: &User{
-			log:     log.With().Str("root", address.String()).Logger(),
+			log:     log,
 			cli:     cli,
 			lib:     lib,
 			address: address,
-			pub:     pub,
 			priv:    priv,
 			signer:  crypto.NewInMemorySigner(priv, pub.HashAlgo),
-			nonce:   pub.SequenceNumber,
+			mutex:   &sync.Mutex{},
 			wg:      &sync.WaitGroup{},
 		},
 	}
@@ -108,14 +107,13 @@ func (r *Root) CreateUser() (*User, error) {
 	}
 
 	user := &User{
-		log:     r.log.With().Str("user", address.Hex()).Logger(),
+		log:     r.log,
 		lib:     r.lib,
 		cli:     r.cli,
 		address: address,
-		pub:     pub,
 		priv:    priv,
 		signer:  crypto.NewInMemorySigner(priv, pub.HashAlgo),
-		nonce:   pub.SequenceNumber,
+		mutex:   &sync.Mutex{},
 		wg:      &sync.WaitGroup{},
 	}
 

@@ -9,11 +9,6 @@ import (
 	"github.com/onflow/flow-go-sdk"
 )
 
-const (
-	FUNGIBLE_TOKEN = "FUNGIBLE_TOKEN"
-	FLOW_TOKEN     = "FLOW_TOKEN"
-)
-
 const createAccountTemplate = `
 import FungibleToken from 0xFUNGIBLE_TOKEN
 import FlowToken from 0xFLOW_TOKEN

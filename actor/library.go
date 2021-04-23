@@ -6,4 +6,5 @@ import (
 
 type Library interface {
 	CreateAccount(key *flow.AccountKey) *flow.Transaction
+	SendTokens(from flow.Address, to flow.Address, amount uint) *flow.Transaction
 }

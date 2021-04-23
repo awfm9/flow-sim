@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"time"
+	"sync"
+
+	"github.com/rs/zerolog"
 
 	"github.com/onflow/flow-go-sdk"
 	"github.com/onflow/flow-go-sdk/client"
@@ -15,7 +17,7 @@ type Root struct {
 	*User
 }
 
-func NewRoot(cli *client.Client, lib Library, address flow.Address, key string) (*Root, error) {
+func NewRoot(log zerolog.Logger, cli *client.Client, lib Library, address flow.Address, key string) (*Root, error) {
 
 	account, err := cli.GetAccount(context.Background(), address)
 	if err != nil {
@@ -30,6 +32,7 @@ func NewRoot(cli *client.Client, lib Library, address flow.Address, key string) 
 
 	root := &Root{
 		User: &User{
+			log:     log.With().Str("root", address.String()).Logger(),
 			cli:     cli,
 			lib:     lib,
 			address: address,
@@ -37,6 +40,7 @@ func NewRoot(cli *client.Client, lib Library, address flow.Address, key string) 
 			priv:    priv,
 			signer:  crypto.NewInMemorySigner(priv, pub.HashAlgo),
 			nonce:   pub.SequenceNumber,
+			wg:      &sync.WaitGroup{},
 		},
 	}
 
@@ -67,37 +71,44 @@ func (r *Root) CreateUser() (*User, error) {
 	// obtain the transaction that creates an account with the given key
 	tx := r.lib.CreateAccount(pub)
 
-	// submit the transaction and wait for result
-	err = r.Submit(tx)
-	if err != nil {
-		return nil, fmt.Errorf("could not submit transaction (%w)", err)
-	}
+	// create different channels to handle the transaction results
+	failure := make(chan error)        // in case the transaction failed
+	success := make(chan flow.Address) // to receive the address
+	missing := make(chan struct{})     // in case the correct event is missing
 
-	// wait for the transaction to be sealed so we have full result available
-	var address flow.Address
-Outer:
-	for {
-		time.Sleep(100 * time.Millisecond)
-		result, err := r.cli.GetTransactionResult(context.Background(), tx.ID())
-		if err != nil {
-			return nil, fmt.Errorf("could not get transaction result (%w)", err)
-		}
-		if result.Status != flow.TransactionStatusSealed {
-			continue
-		}
-		if result.Error != nil {
-			return nil, fmt.Errorf("transaction failed (%w)", err)
-		}
+	// create a closure to handle a successful account creation
+	sealed := func(result *flow.TransactionResult) {
 		for _, event := range result.Events {
 			if event.Type != flow.EventAccountCreated {
 				continue
 			}
-			address = flow.AccountCreatedEvent(event).Address()
-			break Outer
+			success <- flow.AccountCreatedEvent(event).Address()
 		}
+		close(missing)
+	}
+
+	// create a closure to handle failed account creation
+	failed := func(err error) {
+		failure <- err
+	}
+
+	// submit the transaction and wait for result
+	err = r.Submit(tx, sealed, failed)
+	if err != nil {
+		return nil, fmt.Errorf("could not submit transaction (%w)", err)
+	}
+
+	// wait on failure or success
+	var address flow.Address
+	select {
+	case address = <-success:
+		// continue in function body
+	case err := <-failure:
+		return nil, fmt.Errorf("account creation transaction failed (%w)", err)
 	}
 
 	user := &User{
+		log:     r.log.With().Str("user", address.Hex()).Logger(),
 		lib:     r.lib,
 		cli:     r.cli,
 		address: address,
@@ -105,6 +116,7 @@ Outer:
 		priv:    priv,
 		signer:  crypto.NewInMemorySigner(priv, pub.HashAlgo),
 		nonce:   pub.SequenceNumber,
+		wg:      &sync.WaitGroup{},
 	}
 
 	return user, nil

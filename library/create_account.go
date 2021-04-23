@@ -6,7 +6,7 @@ import (
 
 	"github.com/onflow/cadence"
 	"github.com/onflow/cadence/encoding/json"
-	sdk "github.com/onflow/flow-go-sdk"
+	"github.com/onflow/flow-go-sdk"
 )
 
 const (
@@ -32,14 +32,14 @@ transaction(key: String, amount: UFix64) {
 }
 `
 
-func createAccount(fungibleAddress sdk.Address, flowAddress sdk.Address, defaultBalance uint) func(accountKey *sdk.AccountKey) *sdk.Transaction {
+func createAccount(fungibleAddress flow.Address, flowAddress flow.Address, defaultBalance uint) func(accountKey *flow.AccountKey) *flow.Transaction {
 	script := createAccountTemplate
 	script = strings.ReplaceAll(script, FUNGIBLE_TOKEN, fungibleAddress.Hex())
 	script = strings.ReplaceAll(script, FLOW_TOKEN, flowAddress.Hex())
 	amount, _ := cadence.NewUFix64FromParts(int(defaultBalance), 0)
-	return func(accountKey *sdk.AccountKey) *sdk.Transaction {
+	return func(accountKey *flow.AccountKey) *flow.Transaction {
 		key := cadence.NewString(hex.EncodeToString(accountKey.Encode()))
-		tx := sdk.NewTransaction().
+		tx := flow.NewTransaction().
 			SetScript([]byte(script)).
 			AddRawArgument(json.MustEncode(key)).
 			AddRawArgument(json.MustEncode(amount))

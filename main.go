@@ -58,7 +58,7 @@ func main() {
 	lib := library.New(fungibleAddress, flowAddress, flagBalance)
 
 	// initialize the root account
-	root, err := actor.NewRoot(cli, lib, rootAddress, flagKey)
+	root, err := actor.NewRoot(log, cli, lib, rootAddress, flagKey)
 	if err != nil {
 		log.Fatal().Err(err).Msg("could not initialize root")
 	}

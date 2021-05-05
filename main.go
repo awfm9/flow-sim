@@ -149,8 +149,8 @@ func main() {
 	go func() {
 		defer wg.Done()
 
-		// the initial interval is one time-to-sealing
-		interval := 15 * time.Second
+		// the initial deadline is one time to sealing
+		deadline := time.Now().Add(15 * time.Second)
 
 		// keep list of all users
 		var users []*actor.User
@@ -172,25 +172,23 @@ func main() {
 				users = append(users, user)
 
 			// otherwise, use ticker to decide how many
-			case <-time.After(interval):
+			case <-time.After(time.Until(deadline)):
 
-				// make sure we have at least two accounts created
-				if accounts < 2 {
-					continue
-				}
+				// reset the interval, avoiding divide by zero, so that we can
+				// hit this case again
+				interval := 15 * time.Second / time.Duration(accounts+1)
+				deadline = time.Now().Add(interval)
 
-				// make sure each account sends one transaction for every
-				// time-to-sealing period
-				interval = 15 * time.Second / time.Duration(accounts)
-
-				// if we have less than two users, skip for now
+				// if we have less than two users, skip sending tokens as we
+				// don't have a sender and receiver
 				if len(users) < 2 {
 					continue
 				}
 
-				// check if we have reached maximum number of transactions
-				total := atomic.AddUint64(&transactions, 1)
-				if total > flagLimit {
+				// check if we have reached maximum number of transactions; if
+				// we do, signal shutdown and skip sending as well
+				transactions := atomic.AddUint64(&transactions, 1)
+				if transactions > flagLimit {
 					close(done)
 					continue
 				}
@@ -246,12 +244,12 @@ func main() {
 			case <-done:
 				break LoggingLoop
 			case <-ticker.C:
-				total := atomic.LoadUint64(&transactions)
-				if total == previous {
+				transactions := atomic.LoadUint64(&transactions)
+				if transactions == previous {
 					continue
 				}
-				previous = total
-				log.Info().Uint64("transactions", total).Msg("transaction(s) added")
+				previous = transactions
+				log.Info().Uint64("transactions", transactions).Msg("transaction(s) added")
 			}
 		}
 

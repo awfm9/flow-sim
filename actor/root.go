@@ -82,6 +82,7 @@ func (r *Root) CreateUser() (*User, error) {
 				continue
 			}
 			success <- flow.AccountCreatedEvent(event).Address()
+			return
 		}
 		close(missing)
 	}
@@ -89,6 +90,7 @@ func (r *Root) CreateUser() (*User, error) {
 	// create a closure to handle failed account creation
 	failed := func(err error) {
 		failure <- err
+		close(failure)
 	}
 
 	// submit the transaction and wait for result
@@ -100,6 +102,8 @@ func (r *Root) CreateUser() (*User, error) {
 	// wait on failure or success
 	var address flow.Address
 	select {
+	case <-missing:
+		return nil, fmt.Errorf("account created event missing")
 	case address = <-success:
 		// continue in function body
 	case err := <-failure:

@@ -251,7 +251,7 @@ func main() {
 					continue
 				}
 				previous = total
-				log.Info().Uint64("transactions", total).Msg("token transer(s) added")
+				log.Info().Uint64("transactions", total).Msg("transaction(s) added")
 			}
 		}
 

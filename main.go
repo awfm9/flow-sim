@@ -125,7 +125,7 @@ func main() {
 			// create the user
 			user, err := root.CreateUser()
 			if err != nil {
-				log.Fatal().Err(err).Msg("could not create user")
+				log.Fatal().Err(err).Msg("could not create user account")
 			}
 
 			transactions++
@@ -135,7 +135,7 @@ func main() {
 				Uint("transactions", transactions).
 				Uint("accounts", accounts).
 				Str("address", user.Address().Hex()).
-				Msg("user account added")
+				Msg("user account created")
 
 			// submit user to channel to add to managed users
 			creation <- user
@@ -213,7 +213,7 @@ func main() {
 					}()
 					err := sender.SendTokens(receiver.Address(), 1)
 					if err != nil {
-						log.Error().Err(err).Msg("token transfer failed")
+						log.Error().Err(err).Msg("could not execute token transfer")
 						return
 					}
 

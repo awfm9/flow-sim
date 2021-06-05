@@ -5,8 +5,8 @@ go 1.16
 require (
 	github.com/ethereum/go-ethereum v1.10.3 // indirect
 	github.com/kr/pretty v0.2.1 // indirect
-	github.com/onflow/cadence v0.16.1
-	github.com/onflow/flow-go-sdk v0.20.0
+	github.com/onflow/cadence v0.15.1
+	github.com/onflow/flow-go-sdk v0.18.0
 	github.com/onflow/flow/protobuf/go/flow v0.2.0 // indirect
 	github.com/rs/zerolog v1.22.0
 	github.com/sirupsen/logrus v1.8.1 // indirect

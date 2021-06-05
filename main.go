@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/signal"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -35,7 +34,7 @@ func main() {
 		flagNet     string
 		flagBalance uint
 		flagUsers   uint
-		flagLimit   uint64
+		flagLimit   uint
 		flagLevel   string
 	)
 
@@ -45,7 +44,7 @@ func main() {
 	pflag.StringVarP(&flagNet, "net", "n", "flow-testnet", "Flow network to use")
 	pflag.UintVarP(&flagBalance, "balance", "b", 1, "default token balance for new accounts")
 	pflag.UintVarP(&flagUsers, "users", "u", 1_000, "number of users to create")
-	pflag.Uint64VarP(&flagLimit, "limit", "l", 1_000_000, "number of total transactions to execute before stopping")
+	pflag.UintVarP(&flagLimit, "limit", "l", 1_000_000, "number of total transactions to execute before stopping")
 	pflag.StringVarP(&flagLevel, "level", "g", zerolog.InfoLevel.String(), "log level to use for log output")
 
 	// parse the command line flags into the configuration variables
@@ -87,9 +86,6 @@ func main() {
 
 	log.Debug().Str("address", root.Address().Hex()).Msg("root account initialized")
 
-	// keeping track of total number of transactions
-	var transactions uint64
-
 	// on first signal, we just close the channel; on second one, we force
 	// the shut down
 	wg := &sync.WaitGroup{}
@@ -101,9 +97,12 @@ func main() {
 		os.Exit(1)
 	}()
 
-	// create the configured amount of user accounts
-	var accounts uint
+	// create a channel to pipe users from user creation loop to transfer loop
 	creation := make(chan *actor.User)
+
+	// create the configured amount of user accounts
+	var transactions uint
+	var accounts uint
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -118,13 +117,10 @@ func main() {
 			}
 
 			// check if we have reached maximum number of transactions
-			total := atomic.AddUint64(&transactions, 1)
-			if total > flagLimit {
+			if transactions >= flagLimit {
 				close(done)
 				continue
 			}
-
-			log.Debug().Msg("creating user account")
 
 			// create the user
 			user, err := root.CreateUser()
@@ -132,11 +128,14 @@ func main() {
 				log.Fatal().Err(err).Msg("could not create user")
 			}
 
-			log.Debug().Str("address", user.Address().Hex()).Msg("user account created")
-
+			transactions++
 			accounts++
 
-			log.Info().Uint("accounts", accounts).Msg("user account added")
+			log.Info().
+				Uint("transactions", transactions).
+				Uint("accounts", accounts).
+				Str("address", user.Address().Hex()).
+				Msg("user account added")
 
 			// submit user to channel to add to managed users
 			creation <- user
@@ -145,6 +144,7 @@ func main() {
 	}()
 
 	// create the number of transactions per second that are configured
+	var transfers uint
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -187,8 +187,7 @@ func main() {
 
 				// check if we have reached maximum number of transactions; if
 				// we do, signal shutdown and skip sending as well
-				transactions := atomic.AddUint64(&transactions, 1)
-				if transactions > flagLimit {
+				if transactions >= flagLimit {
 					close(done)
 					continue
 				}
@@ -205,11 +204,6 @@ func main() {
 				users[0], users[last] = users[last], users[0]
 				users = users[:last]
 
-				log.Debug().
-					Str("sender", sender.Address().Hex()).
-					Str("receiver", receiver.Address().Hex()).
-					Msg("executing token transfer")
-
 				// execute the send in its own goroutine and add user back to pool when done
 				wg.Add(1)
 				go func() {
@@ -222,7 +216,13 @@ func main() {
 						log.Error().Err(err).Msg("token transfer failed")
 						return
 					}
-					log.Debug().
+
+					transactions++
+					transfers++
+
+					log.Info().
+						Uint("transactions", transactions).
+						Uint("transfers", transfers).
 						Str("sender", sender.Address().Hex()).
 						Str("receiver", receiver.Address().Hex()).
 						Msg("token transfer executed")
@@ -230,29 +230,6 @@ func main() {
 
 			}
 		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
-		ticker := time.NewTicker(time.Second)
-		var previous uint64
-	LoggingLoop:
-		for {
-			select {
-			case <-done:
-				break LoggingLoop
-			case <-ticker.C:
-				transactions := atomic.LoadUint64(&transactions)
-				if transactions == previous {
-					continue
-				}
-				previous = transactions
-				log.Info().Uint64("transactions", transactions).Msg("transaction(s) added")
-			}
-		}
-
 	}()
 
 	wg.Wait()
